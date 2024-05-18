@@ -1,4 +1,5 @@
 import json
+import math
 from collections import Counter
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query, HTTPException
@@ -11,6 +12,7 @@ from .ml_models.emotion_model.model import EmotionModel
 from .ml_models.encoder_model.model import TextEncoderModel 
 from .ml_models.clustering_model.model import TextClusteringModel
 from .ml_models.agreement_model.model import TextAgreementModel
+from .config import DECAY_FACTOR
 
 load_dotenv()
 
@@ -85,17 +87,26 @@ async def analyse_speaker_relationships(transcript : Transcript, speaker : str =
                 if (dialog1.speaker == speaker and dialog2.speaker != speaker) or (dialog2.speaker == speaker and dialog1.speaker != speaker):
                     dialog_pairs.append((dialog1, dialog2))
     speaker_agreement_scores = {i : [] for i in speakers if i != speaker}
+    max_possible_agreement_scores = {i: [] for i in speakers if i != speaker}
     for pair in dialog_pairs:
-        label, score = text_agremment_model.predict_category(pair[0].message, pair[1].message)
+        label, init_score = text_agremment_model.predict_category(pair[0].message, pair[1].message)
         if label == 1:
-            score = -score
-        final_score = score/(abs(pair[0].index - pair[1].index)**2)
+            init_score = -init_score
+        distance = abs(pair[0].index - pair[1].index)
+        weight = math.e**-(DECAY_FACTOR*(distance-1))
+        agreement_score = init_score * weight
+        max_possible_agreement_score = 1 * weight
         other_speaker = pair[0].speaker if pair[0].speaker != speaker else pair[1].speaker
-        speaker_agreement_scores[other_speaker].append(final_score)
+        speaker_agreement_scores[other_speaker].append(agreement_score)
+        max_possible_agreement_scores[other_speaker].append(max_possible_agreement_score)
     data = []
-    for other_speaker, agreement_scores in speaker_agreement_scores.items():
-        data.append(SpeakerRelationship(speaker1=speaker,
+    for other_speaker in speakers: 
+        if other_speaker != speaker:
+            agreement_score = sum(speaker_agreement_scores[other_speaker])/sum(max_possible_agreement_scores[other_speaker]) if len(max_possible_agreement_scores[other_speaker]) > 0 else 0
+            data.append(SpeakerRelationship(speaker1=speaker,
                                         speaker2=other_speaker,
-                                        agreement_score=sum(agreement_scores)/len(agreement_scores) if agreement_scores else 0))
+                                        agreement_score=agreement_score))
+        
+    print(data)
     speaker_relationships_report = SpeakerRelationshipsReport(report=data)
     return speaker_relationships_report
